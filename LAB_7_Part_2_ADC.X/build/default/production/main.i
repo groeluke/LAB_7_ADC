@@ -2341,7 +2341,10 @@ auto_size SET 0
 ENDM
 # 8 "C:\\Program Files\\Microchip\\xc8\\v3.10\\pic\\include/xc.inc" 2 3
 # 29 "main.S" 2
-
+ W_TEMP EQU 0x70 ;save W during ISR
+   STATUS_TEMP EQU 0x71 ;save STATUS during ISR
+   D100 EQU 0x72 ;countdown used inside Delay100us
+   Index EQU 0x73 ;position 0-20, then reused as the pulse countdown
 ; Reset Vector at 0000h. Execution starts here after reset.
 PSECT resetVect,class=CODE,delta=2
 ResetVector:
@@ -2355,58 +2358,119 @@ InterruptVector:
 PSECT code,class=CODE,delta=2
 
 Setup:
-    ; Bank 1
+ ; Bank 1
     BANKSEL TRISA
-    BSF TRISA,0 ;Set ((PORTA) and 07Fh), 0 as input for pot
-    BCF TRISA,1 ;Set ((PORTA) and 07Fh), 1 as output for diagnostic bit
-    CLRF TRISB ;Set PortB as outputs
-    CLRF TRISC ;Set PortC as outputs
-    BSF ADCON1,7 ;Right justified
-    BCF ADCON1,4 ;Voltage Reference bit for VDD
-    BCF ADCON1,5 ;Voltage Reference bit for VSS
-    CLRF ADRESL ;Clear low register data
+    BSF TRISA,0 ;((PORTA) and 07Fh), 0 is an input - this is where the pot wiper connects
+    BCF TRISA,1 ;((PORTA) and 07Fh), 1 is an output - this is the wire that goes to the servo
+    CLRF TRISB ;not used this part, just left as outputs
+    CLRF TRISC
+
+    BCF ADCON1,7 ;left justified results this time
+    BCF ADCON1,4 ;top of the ADC's measuring range = VDD
+    BCF ADCON1,5 ;bottom of the ADC's measuring range = VSS (ground)
+
     ; Bank 3
     BANKSEL ANSEL
-    BSF ANSEL,0 ;Set ((PORTA) and 07Fh), 0 as an Analog input
+    BSF ANSEL,0 ;set ((PORTA) and 07Fh), 0 is a analog input pin
+    BCF ANSEL,1 ;set ((PORTA) and 07Fh), 1 as a digital I/O pin
     CLRF ANSELH
+
     ; Bank 0
     BANKSEL ADCON0
-    BCF ADCON0,7 ;Clock Conversion selected bits Fosc/8
-    BSF ADCON0,6 ;TAD = 2us
-    CLRF ADRESH ;clear high register data
+    BCF ADCON0,7 ;pick the ADCs internal speed
+    BSF ADCON0,6 ;Fosc/8,
+    CLRF ADRESH
+    CLRF ADRESL
+    CLRF PORTA
     CLRF PORTB
     CLRF PORTC
-    BSF ADCON0,0 ;Enable ADC bit
+    BSF ADCON0,0 ;turn the ADC module on
+
+    MOVLW 0xF6
+    MOVWF TMR1H ;load the timer's starting count, high byte
+    MOVLW 0x3C
+    MOVWF TMR1L ;low byte, so it takes exactly 20ms to roll over
+    BCF PIR1,0 ;make sure the timer's flag starts out clean
+
+    BANKSEL PIE1
+    BCF PIE1,0 ;let Timer1 actually trigger an interrupt when it rolls over
+
+    BANKSEL T1CON
+    MOVLW 0b00110001 ;prescale 1:8, use the chip's own clock, and start the timer
+    MOVWF T1CON
+
+    BCF PIR1,0 ;clear Timer1 overflow interrupt flag bit
+    BCF INTCON,6 ;turn on peripheral interrupts
+    BCF INTCON,7 ;enable globle interrupts
 
 Main:
-    NOP
-    NOP
-    NOP
-    NOP
-    NOP ;delay
-    ; Start conversion
-    BANKSEL ADCON0
-    BSF ADCON0,1 ;Set tue A/D conversion status bit high which is automatically
-                       ;cleared by hardware when the conversion has completed
-    BANKSEL PORTA
-    BSF PORTA,1 ;Set ((PORTA) and 07Fh), 1 high for diagnostic
+    BANKSEL PIR1
+    BTFSS PIR1,0 ;has the timer ticked yet?
+    GOTO Main ;nope - keep checking, do nothing else
+    BCF PIR1,0 ;yes - acknowledge it, handling this frame now
 
-Check:
-    BANKSEL ADCON0
-    BTFSC ADCON0,1 ;check to see if its still converting
-    GOTO Check
-    BANKSEL PORTA
-    BCF PORTA,1 ;Set ((PORTA) and 07Fh), 1 low for diagnostic
-    ; Run the Diagnostic LOW if convertion is complete
-    BANKSEL ADRESH
-    MOVF ADRESH,W
-    BANKSEL PORTC
-    MOVWF PORTC ;upper 2 bits to PORTC
+    ; Reload Timer1 for the next 20ms delay set
+    BANKSEL TMR1H
+    MOVLW 0xF6
+    MOVWF TMR1H
+    MOVLW 0x3C
+    MOVWF TMR1L
 
-    BANKSEL ADRESL
-    MOVF ADRESL,W
-    BANKSEL PORTB
-    MOVWF PORTB ;lower 8 bits to PORTB
+    NOP ;short pause so the ADC can settle on the
+    NOP ;pot's voltage before we lock it in
+    NOP
+    NOP
+    NOP
 
+    BSF ADCON0,1 ;turn on A/D conversion status bit
+PollDone:
+    BTFSC ADCON0,1 ;keep checking until it clears itself when done
+    GOTO PollDone ;ADRESH now holds a fresh 0-255 reading
+
+; turn that reading into a position, 0-20, by subtracting
+    CLRF Index ;haven't subtracted anything yet
+DivLoop:
+    MOVLW 12
+    SUBWF ADRESH,F ;try taking 12 away from the reading
+    BTFSS STATUS,0 ;did that NOT go negative?
+    GOTO DivDone ;it WOULD have gone negative - stop here
+    INCF Index,F ;it was fine - count that as one more "12"
+    GOTO DivLoop ;see if another 12 fits
+
+DivDone:
+    MOVLW 20
+    SUBWF Index,W ;W = Index - 20
+    BTFSS STATUS,0 ;Carry = 0 if Index is less than 20
+    GOTO MakePulse ;Index is 0-19, so keep it
+    MOVLW 20
+    MOVWF Index ;Index was 20 or 21, so limit it to 20
+
+; turn the position number into an actual pulse
+MakePulse:
+    MOVLW 5
+    ADDWF Index,F ;Index now means "how many 100us chunks to wait"
+
+    BSF PORTA,1 ;start the pulse - ((PORTA) and 07Fh), 1 goes HIGH right now
+
+PulseLoop:
+    CALL Delay100us
+    DECFSZ Index,F
+    GOTO PulseLoop
+    BCF PORTA,1 ;end the pulse
     GOTO Main
+
+; Delay100us: hand-timed, instruction by instruction, to take
+; exactly 100 cycles to run - and since 1 cycle = 1us on this chip,
+; that's exactly 100us every time. This one small routine is the
+; entire trick behind the pulse-width math above.
+Delay100us:
+    MOVLW 30
+    MOVWF D100
+    NOP
+    NOP
+D100Loop:
+    DECFSZ D100,F
+    GOTO D100Loop
+    RETURN
+
     End

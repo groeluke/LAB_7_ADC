@@ -2365,12 +2365,10 @@ Setup:
     BCF ADCON1,4 ;Voltage Reference bit for VDD
     BCF ADCON1,5 ;Voltage Reference bit for VSS
     CLRF ADRESL ;Clear low register data
-
     ; Bank 3
     BANKSEL ANSEL
     BSF ANSEL,0 ;Set ((PORTA) and 07Fh), 0 as an Analog input
     CLRF ANSELH
-
     ; Bank 0
     BANKSEL ADCON0
     BCF ADCON0,7 ;Clock Conversion selected bits Fosc/8
@@ -2381,29 +2379,24 @@ Setup:
     BSF ADCON0,0 ;Enable ADC bit
 
 Main:
-   ; Delay
     NOP
     NOP
     NOP
     NOP
-    NOP
-    ; 5 NOPs ? 5 µs @ 4 MHz
-
+    NOP ;delay
     ; Start conversion
     BANKSEL ADCON0
-    BSF ADCON0,1 ;Set tue A/D conversion status bit high which is automatically ceared
-                       ;by hardware when the conversion has completed
+    BSF ADCON0,1 ;Set tue A/D conversion status bit high which is automatically
+                       ;cleared by hardware when the conversion has completed
     BANKSEL PORTA
-    BSF PORTA,1 ;Set ((PORTA) and 07Fh), 1 high
+    BSF PORTA,1 ;Set ((PORTA) and 07Fh), 1 high for diagnostic
 
 Check:
     BANKSEL ADCON0
     BTFSC ADCON0,1 ;check to see if its still converting
     GOTO Check
-
     BANKSEL PORTA
-    BCF PORTA,1 ;Set ((PORTA) and 07Fh), 1 low
-
+    BCF PORTA,1 ;Set ((PORTA) and 07Fh), 1 low for diagnostic
     ; Run the Diagnostic LOW if convertion is complete
     BANKSEL ADRESH
     MOVF ADRESH,W
