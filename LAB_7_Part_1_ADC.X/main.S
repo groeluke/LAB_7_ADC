@@ -1,7 +1,8 @@
     ; Luke Groesbeck
     ; RCET3373
     ; Timers
-    ; https://github.com/groeluke/Lab_6_Timers-/tree/main/LAB_6_Part_1_Timer.X
+    ; https://github.com/groeluke/LAB_7_ADC/tree/main/LAB_7_Part_1_ADC.X
+    ; Linker code = -Wl,-presetVect=0000h,-pisrVect=0004h,-pcode=0008h
     
 ; PIC16F883 Configuration Bit Settings
 
@@ -25,9 +26,7 @@
 
 ; config statements should precede project file includes.
 #include <xc.inc>
-   W_TEMP      EQU 0x70 ;use data memory address 0x70 will hold W during the ISR  
-   STATUS_TEMP EQU 0x71 ;use data memory address 0x71 holds swapped STATUS during the ISR
-
+  
 ; Reset Vector at 0000h. Execution starts here after reset.
 PSECT resetVect,class=CODE,delta=2
 ResetVector: 
@@ -36,7 +35,6 @@ ResetVector:
 ; Interrupt Vector at 0004h. Execution starts here after an interrupt.
 PSECT isrVect,class=CODE,delta=2
 InterruptVector:
-    GOTO IsrHandler
    
 ; Main code section starts at 0008h. User code goes here.
 PSECT code,class=CODE,delta=2
@@ -44,55 +42,57 @@ PSECT code,class=CODE,delta=2
 Setup: 
     ;          Bank 1
     BANKSEL TRISA
-    BCF     TRISA,0     ;Set RA0 as output for main loop 
-    BCF     TRISA,1     ;Set RA1 as output for timer diagnostic
-    MOVLW   249         ;PR2 = 249 counts on Timer match
-    MOVWF   PR2
-    BSF     PIE1,1      ;enable Timer2 to PR2 match interrupt enable
-    
+    BSF     TRISA,0     ;Set RA0 as input for pot 
+    BCF     TRISA,1     ;Set RA1 as output for diagnostic bit
+    CLRF    TRISB       ;Set PortB as outputs
+    CLRF    TRISC       ;Set PortC as outputs
+    BSF     ADCON1,7    ;Right justified
+    BCF     ADCON1,4    ;Voltage Reference bit for VDD
+    BCF     ADCON1,5    ;Voltage Reference bit for VSS
+    CLRF    ADRESL      ;Clear low register data
     ;          Bank 3
     BANKSEL ANSEL
-    CLRF    ANSEL
+    BSF     ANSEL,0     ;Set RA0 as an Analog input
     CLRF    ANSELH
-
     ;          Bank 0
-    BANKSEL PORTA
-    CLRF    PORTA       ;monitor pin starts low
-    CLRF    TMR2        ;Timer2 count starts at 0
-    BCF     PIR1,1      ;Clear Timer2 interrupt flag
-    
-    BSF INTCON,6        ;enable peripheral 
-    BSF INTCON,7        ;global enable
-    
-    MOVLW   0b00100111  ;Turn on postscarle 1:5, Timer2 On, prescale 1:16
-    MOVWF   T2CON       ;
-
+    BANKSEL ADCON0
+    BCF     ADCON0,7    ;Clock Conversion selected bits Fosc/8
+    BSF     ADCON0,6    ;TAD = 2us
+    CLRF    ADRESH      ;clear high register data
+    CLRF    PORTB
+    CLRF    PORTC
+    BSF     ADCON0,0    ;Enable ADC bit
 
 Main:
-    MOVLW 0x01          ;Loads RA0 to toggle
-    XORWF PORTA,1       ;toggle RA0 
-    GOTO Main
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP                ;delay
+    ;       Start conversion
+    BANKSEL ADCON0
+    BSF     ADCON0,1   ;Set tue A/D conversion status bit high which is automatically
+                       ;cleared by hardware when the conversion has completed
+    BANKSEL PORTA
+    BSF     PORTA,1    ;Set RA1 high for diagnostic
 
-IsrHandler:
-    ;         save
-    MOVWF W_TEMP          ;save W (no flags affected)
-    SWAPF STATUS,W        ;STATUS into W with nibbles swapped, no flags change
-    MOVWF STATUS_TEMP     ;save swapped STATUS
+Check:
+    BANKSEL ADCON0
+    BTFSC   ADCON0,1   ;check to see if its still converting
+    GOTO    Check
+    BANKSEL PORTA
+    BCF     PORTA,1    ;Set RA1 low for diagnostic
+    ;       Run the Diagnostic LOW if convertion is complete
+    BANKSEL ADRESH
+    MOVF    ADRESH,W
+    BANKSEL PORTC
+    MOVWF   PORTC      ;upper 2 bits to PORTC
 
-    ;         only reset Timer2
-    BANKSEL PIR1
-    BCF PIR1,1            ;clear Timer2 to PR2 interrupt flag
-    BSF PORTA,1           ;have timer diagnostic pulse high
-    BCF PORTA,1           ;set timer diagnostic pulse low
+    BANKSEL ADRESL
+    MOVF    ADRESL,W
+    BANKSEL PORTB
+    MOVWF   PORTB      ;lower 8 bits to PORTB
 
-
-ISR_Exit:
-    ;         restore 
-    SWAPF STATUS_TEMP,W   ;un-swap STATUS into W
-    MOVWF STATUS          ;restores flags AND bank bits (RP0/RP1)
-    SWAPF W_TEMP,F        ;swap W_TEMP nibbles in place
-    SWAPF W_TEMP,W        ;swap back into W, STATUS untouched
-    RETFIE
-
+    GOTO    Main
     End
     
