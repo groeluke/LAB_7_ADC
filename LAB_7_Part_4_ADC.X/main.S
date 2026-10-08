@@ -1,7 +1,7 @@
     ; Luke Groesbeck
     ; RCET3373
     ; Timers
-    ; https://github.com/groeluke/LAB_7_ADC/tree/main/LAB_7_Part_3_ADC.X
+    ; https://github.com/groeluke/LAB_7_ADC/tree/main/LAB_7_Part_4_ADC.X
     ; Linker code = -Wl,-presetVect=0000h,-pisrVect=0004h,-pcode=0008h
     
 ; PIC16F883 Configuration Bit Settings
@@ -70,18 +70,23 @@ Setup:
     CLRF    ADRESH
     CLRF    ADRESL
     BSF     ADCON0,0      ;turn the ADC module on
+    
     MOVLW   0b00001010    ;CCP1 in Compare mode: just flag an interrupt on
     MOVWF   CCP1CON       ;match, don't touch the pin directly ourselves
+    
     MOVLW   0xB1
     MOVWF   TMR1H         ;load the timer's starting count, high byte
     MOVLW   0xE0
     MOVWF   TMR1L         ;low byte, so it takes exactly 20ms to roll over
+    
     BCF     PORTC,2       ;gorce the servo low so no weird glitch
+     
     BCF     PIR1,0        ;clear the timer1 interrupt flag
     BCF     PIR1,2        ;clear the CCP1 interrupt flag 
     BANKSEL PIE1
     BSF     PIE1,0        ;Timer1 CAN now trigger an interrupt when it rolls over
     BSF     PIE1,2        ;CCP1 can now trigger an interrupt on a compare match
+    
     BANKSEL ADCON0        ; back to Bank 0
     CLRF    Pulse         ;nothing is happening yet
     CLRF    ADCDone
@@ -94,25 +99,31 @@ Setup:
 StartupWait:
     BTFSC   ADCON0,1
     GOTO    $-1
+    
     MOVF    ADRESH,W
     MOVWF   ADCIndex
     BCF     STATUS,0
     RRF     ADCIndex,F    ;shift right once RRF rotates f right throught a carry flag
     BCF     STATUS,0
     RRF     ADCIndex,F    ;again so ADCIndex is now a clean 0-63 number
+
     MOVF    ADCIndex,W
     PAGESEL LookupAdc6ToCcp  ;the lookup routine might live on a different
     CALL    LookupAdc6ToCcp  ;page of program memory, so this makes sure
     PAGESEL $             ;the CALL actually lands on it
+
     MOVF    ccp_next_h,W
     MOVWF   CCPR1H        ;manually load the very first pulse's end-time,
     MOVF    ccp_next_l,W  ;since Timer1's ISR (which normally does this)
     MOVWF   CCPR1L        ;hasn't run yet
     BSF     ADCDone,0     ;this value is ready and waiting
+
     MOVLW   0b00000001    ;prescale 1:1, internal clock, and start Timer1
     MOVWF   T1CON         ;counting right now, from 0xB1E0
+
     BSF     INTCON,6      ;allow peripherals to interrupt at all
     BSF     INTCON,7      ;interrupts can now actually happen
+    
 Main:
     BTFSC   Pulse,0       ;is a pulse still actively running
     GOTO    Main          ;if high don't touch the ADC yet
@@ -123,28 +134,36 @@ Main:
 ConvWait:
     BTFSC   ADCON0,1
     GOTO    ConvWait
+
     MOVF    ADRESH,W
     MOVWF   ADCIndex
     BCF     STATUS,0
     RRF     ADCIndex,F
     BCF     STATUS,0
     RRF     ADCIndex,F    ;AdcIndex is now 0-63
+
     MOVF    ADCIndex,W
     PAGESEL LookupAdc6ToCcp
     CALL    LookupAdc6ToCcp  ;ccp_next_h:ccp_next_l now holds next
     PAGESEL $                ;frame's pulse end-time
+
     BSF     ADCDone,0     ;done for this frame - go idle
     GOTO    Main
+
 ; ISR - Timer1 starts each frame's pulse, CCP1 ends it. Nothing else
 ; in this program can interrupt, so either one could have fired.
+
 IsrHandler:
     MOVWF   W_TEMP
     SWAPF   STATUS,W
     MOVWF   STATUS_TEMP
+
     BTFSC   PIR1,0        ;did Timer1 just roll over? (new frame)
     CALL    Service_Timer1
+
     BTFSC   PIR1,2        ;did CCP1 just match? (pulse should end)
     CALL    Service_CCP1
+
     SWAPF   STATUS_TEMP,W
     MOVWF   STATUS
     SWAPF   W_TEMP,F
