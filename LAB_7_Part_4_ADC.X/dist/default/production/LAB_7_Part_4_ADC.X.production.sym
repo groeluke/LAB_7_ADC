@@ -45,7 +45,7 @@ resetVect 0 1 CODE 0 0
 isrVect 8 9 CODE 8 0
 code 10 131 CODE 10 0
 %locals
-build/default/debug/main.o
+build/default/production/main.o
 main.S
 58 8 0 CODE 0
 59 A 0 CODE 0
@@ -148,7 +148,7 @@ main.S
 200 77 0 CODE 0
 46 0 0 CODE 0
 51 4 0 CODE 0
-build/default/debug/Lab07-Part4-Map.o
+build/default/production/Lab07-Part4-Map.o
 Lab07-Part4-Map.S
 51 78 0 CODE 0
 52 7A 0 CODE 0

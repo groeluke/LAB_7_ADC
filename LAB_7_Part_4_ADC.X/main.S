@@ -26,11 +26,13 @@
 
 ; config statements should precede project file includes.
 #include <xc.inc>
-   ccp_next_l  EQU 0x23   ;lookup module writes the answer here (low byte)
-   ccp_next_h  EQU 0x24   ;...and here (high byte) - 0x25 is reserved, don't touch it
+   ccp_next_l  EQU 0x21   ;lookup module writes the answer here (low byte)
+   ccp_next_h  EQU 0x22   ;...and here (high byte) - 0x25 is reserved, don't touch it
+   adc_l       EQU 0x23   ;
+   adc_h       EQU 0x24   ;
 
-   GLOBAL  ccp_next_l, ccp_next_h
-   EXTRN   LookupAdc6ToCcp
+   GLOBAL  ccp_next_l, ccp_next_h, adc_l, adc_h
+   EXTRN   MapAdcToCcp     ;this is the called scoure routine 
 
    W_TEMP      EQU 0x70   ;save W during the ISR
    STATUS_TEMP EQU 0x71   ;save STATUS during the ISR
@@ -60,15 +62,13 @@ Setup:
     BANKSEL TRISA
     BSF     TRISA,0       ;RA0 is an input - this is where the pot wiper connects
     BCF     TRISC,2       ;RC2 is an output to the servo for control
-    BCF     ADCON1,7      ;left justified
+    BSF     ADCON1,7      ;right justified
     BCF     ADCON1,4      ;top of the ADC's measuring range VDD
     BCF     ADCON1,5      ;bottom of the ADC's measuring range VSS (ground)
     ;       Bank 0
     BANKSEL ADCON0
     BCF     ADCON0,7      ;pick the ADCs internal speed
     BSF     ADCON0,6      ;Fosc/8
-    CLRF    ADRESH
-    CLRF    ADRESL
     BSF     ADCON0,0      ;turn the ADC module on
     
     MOVLW   0b00001010    ;CCP1 in Compare mode: just flag an interrupt on
@@ -78,8 +78,6 @@ Setup:
     MOVWF   TMR1H         ;load the timer's starting count, high byte
     MOVLW   0xE0
     MOVWF   TMR1L         ;low byte, so it takes exactly 20ms to roll over
-    
-    BCF     PORTC,2       ;gorce the servo low so no weird glitch
      
     BCF     PIR1,0        ;clear the timer1 interrupt flag
     BCF     PIR1,2        ;clear the CCP1 interrupt flag 
@@ -99,19 +97,19 @@ Setup:
 StartupWait:
     BTFSC   ADCON0,1
     GOTO    $-1
-    
+    BANKSEL ADRESH
     MOVF    ADRESH,W
-    MOVWF   ADCIndex
-    BCF     STATUS,0
-    RRF     ADCIndex,F    ;shift right once RRF rotates f right throught a carry flag
-    BCF     STATUS,0
-    RRF     ADCIndex,F    ;again so ADCIndex is now a clean 0-63 number
+    MOVWF   adc_h         ;full 10-bit result, right-justified, no shifting needed
+    BANKSEL ADRESL
+    MOVF    ADRESL,W
+    BANKSEL adc_l
+    MOVWF   adc_l
 
-    MOVF    ADCIndex,W
-    PAGESEL LookupAdc6ToCcp  ;the lookup routine might live on a different
-    CALL    LookupAdc6ToCcp  ;page of program memory, so this makes sure
+    PAGESEL MapAdcToCcp   ;the mapping routine might live on a different
+    CALL    MapAdcToCcp   ;page of program memory, so this makes sure
     PAGESEL $             ;the CALL actually lands on it
 
+    BANKSEL CCPR1H
     MOVF    ccp_next_h,W
     MOVWF   CCPR1H        ;manually load the very first pulse's end-time,
     MOVF    ccp_next_l,W  ;since Timer1's ISR (which normally does this)
@@ -129,23 +127,23 @@ Main:
     GOTO    Main          ;if high don't touch the ADC yet
     BTFSC   ADCDone,0     ;have we already prepared next frame's value
     GOTO    Main          ;if high then nothing more to do until the next frame
-
     BSF     ADCON0,1
 ConvWait:
     BTFSC   ADCON0,1
     GOTO    ConvWait
 
+    BANKSEL ADRESH
     MOVF    ADRESH,W
-    MOVWF   ADCIndex
-    BCF     STATUS,0
-    RRF     ADCIndex,F
-    BCF     STATUS,0
-    RRF     ADCIndex,F    ;AdcIndex is now 0-63
+    MOVWF   adc_h         ;full 10-bit result, right-justified
+    BANKSEL ADRESL 
+    MOVF    ADRESL,W
+    BANKSEL adc_l
+    MOVWF   adc_l
 
-    MOVF    ADCIndex,W
-    PAGESEL LookupAdc6ToCcp
-    CALL    LookupAdc6ToCcp  ;ccp_next_h:ccp_next_l now holds next
-    PAGESEL $                ;frame's pulse end-time
+    BANKSEL ADCON0
+    PAGESEL MapAdcToCcp
+    CALL    MapAdcToCcp   ;ccp_next_h:ccp_next_l now holds next
+    PAGESEL $             ;frame's pulse end-time
 
     BSF     ADCDone,0     ;done for this frame - go idle
     GOTO    Main

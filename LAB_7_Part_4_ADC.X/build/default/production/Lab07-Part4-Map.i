@@ -1,37 +1,39 @@
-# 1 "main.S"
+# 1 "Lab07-Part4-Map.S"
 # 1 "<built-in>" 1
 # 1 "<built-in>" 3
 # 296 "<built-in>" 3
 # 1 "<command line>" 1
 # 1 "<built-in>" 2
-# 1 "main.S" 2
-    ; Luke Groesbeck
-    ; RCET3373
-    ; Timers
-    ; https:
-    ; Linker code = -Wl,-presetVect=0000h,-pisrVect=0004h,-pcode=0008h
+# 1 "Lab07-Part4-Map.S" 2
+;==============================================================================
+; RCET 3375 Lab 07 - Part 4 supplied ADC mapping module
+;
+; Add this file to the MPLAB X project as a separate source file.
+; Do not #include this file from main.S.
+;
+; Public interface:
+; MapAdcToCcp
+; Input: adc_l:adc_h = right-justified 10-bit ADC result
+; Output: ccp_next_l:ccp_next_h = absolute Timer1 CCP match value
+;
+; main.S must define and export:
+; adc_l
+; adc_h
+; ccp_next_l
+; ccp_next_h
+;
+; Mapping:
+; pulse = 500 us + 2*ADC - floor(3*ADC / 64)
+;
+; Note: adc_l:adc_h are used as working registers and are changed by this
+; routine after the result has been mapped.
+;
+; This module reserves Bank 0 address 0x25 as map_count.
+;==============================================================================
 
-; PIC16F883 Configuration Bit Settings
+PROCESSOR 16F883
+RADIX dec
 
-; Assembly source line config statements
-
-; CONFIG1
-  CONFIG FOSC = XT ; Oscillator Selection bits (XT oscillator: Crystal/resonator on RA6/OSC2/CLKOUT and RA7/OSC1/CLKIN)
-  CONFIG WDTE = OFF ; Watchdog Timer Enable bit (WDT disabled and can be enabled by SWDTEN bit of the WDTCON register)
-  CONFIG PWRTE = OFF ; Power-up Timer Enable bit (PWRT disabled)
-  CONFIG MCLRE = ON ; RE3/MCLR pin function select bit (RE3/MCLR pin function is MCLR)
-  CONFIG CP = OFF ; Code Protection bit (Program memory code protection is disabled)
-  CONFIG CPD = OFF ; Data Code Protection bit (Data memory code protection is disabled)
-  CONFIG BOREN = OFF ; Brown Out Reset Selection bits (BOR disabled)
-  CONFIG IESO = OFF ; Internal External Switchover bit (Internal/External Switchover mode is disabled)
-  CONFIG FCMEN = OFF ; Fail-Safe Clock Monitor Enabled bit (Fail-Safe Clock Monitor is disabled)
-  CONFIG LVP = OFF ; Low Voltage Programming Enable bit (RB3 pin has digital I/O, HV on MCLR must be used for programming)
-
-; CONFIG2
-  CONFIG BOR4V = BOR40V ; Brown-out Reset Selection bit (Brown-out Reset set to 4.0V)
-  CONFIG WRT = OFF ; Flash Program Memory Self Write Enable bits (Write protection off)
-
-; config statements should precede project file includes.
 # 1 "C:\\Program Files\\Microchip\\xc8\\v3.10\\pic\\include/xc.inc" 1 3
 
 
@@ -2340,178 +2342,71 @@ stk_offset SET 0
 auto_size SET 0
 ENDM
 # 8 "C:\\Program Files\\Microchip\\xc8\\v3.10\\pic\\include/xc.inc" 2 3
-# 29 "main.S" 2
- ccp_next_l EQU 0x21 ;lookup module writes the answer here (low byte)
-   ccp_next_h EQU 0x22 ;...and here (high byte) - 0x25 is reserved, don't touch it
-   adc_l EQU 0x23 ;
-   adc_h EQU 0x24 ;
+# 31 "Lab07-Part4-Map.S" 2
 
-   GLOBAL ccp_next_l, ccp_next_h, adc_l, adc_h
-   EXTRN MapAdcToCcp ;this is the called scoure routine
+GLOBAL MapAdcToCcp
+EXTRN adc_l, adc_h, ccp_next_l, ccp_next_h
 
-   W_TEMP EQU 0x70 ;save W during the ISR
-   STATUS_TEMP EQU 0x71 ;save STATUS during the ISR
-   Pulse EQU 0x72 ;bit0: 1 while the servo pulse is actively HIGH
-   ADCDone EQU 0x73 ;bit0: 1 once this frame's NEXT value is ready
-   ADCIndex EQU 0x74 ;the ADC reading, squeezed down to 0-63
+; Timer1 reload + 500 us = 0xB1E0 + 500 = 0xB3D4
+CCP_OFFSET_L EQU 0xD4
+CCP_OFFSET_H EQU 0xB3
 
-; Reset Vector at 0000h. Execution starts here after reset.
-PSECT resetVect,class=CODE,delta=2
-ResetVector:
-    GOTO Setup
+map_count EQU 0x25
 
-; Interrupt Vector at 0004h. Execution starts here after an interrupt.
-PSECT isrVect,class=CODE,delta=2
-InterruptVector:
-    GOTO IsrHandler
+PSECT mapCode,class=CODE,delta=2
 
-; Main code section starts at 0008h. User code goes here.
-PSECT code,class=CODE,delta=2
+;------------------------------------------------------------------------------
+; Convert the full 10-bit ADC result into the CCP1 match for the next frame.
+;
+; ccp_next = Timer1 reload + 500 us + 2*ADC - floor(3*ADC / 64)
+;------------------------------------------------------------------------------
 
-Setup:
-    ; Bank 3
-    BANKSEL ANSEL
-    BSF ANSEL,0 ;set ((PORTA) and 07Fh), 0 is a analog input pin
-    CLRF ANSELH
- ; Bank 1
-    BANKSEL TRISA
-    BSF TRISA,0 ;((PORTA) and 07Fh), 0 is an input - this is where the pot wiper connects
-    BCF TRISC,2 ;((PORTC) and 07Fh), 2 is an output to the servo for control
-    BSF ADCON1,7 ;right justified
-    BCF ADCON1,4 ;top of the ADC's measuring range VDD
-    BCF ADCON1,5 ;bottom of the ADC's measuring range VSS (ground)
-    ; Bank 0
-    BANKSEL ADCON0
-    BCF ADCON0,7 ;pick the ADCs internal speed
-    BSF ADCON0,6 ;Fosc/8
-    BSF ADCON0,0 ;turn the ADC module on
-
-    MOVLW 0b00001010 ;CCP1 in Compare mode: just flag an interrupt on
-    MOVWF CCP1CON ;match, don't touch the pin directly ourselves
-
-    MOVLW 0xB1
-    MOVWF TMR1H ;load the timer's starting count, high byte
-    MOVLW 0xE0
-    MOVWF TMR1L ;low byte, so it takes exactly 20ms to roll over
-
-    BCF PIR1,0 ;clear the timer1 interrupt flag
-    BCF PIR1,2 ;clear the CCP1 interrupt flag
-    BANKSEL PIE1
-    BSF PIE1,0 ;Timer1 CAN now trigger an interrupt when it rolls over
-    BSF PIE1,2 ;CCP1 can now trigger an interrupt on a compare match
-
-    BANKSEL ADCON0 ; back to Bank 0
-    CLRF Pulse ;nothing is happening yet
-    CLRF ADCDone
-
-    ;before Timer1 ever starts,
-    ;so the very first frame has a real value to use instead
-    ;of garbage
-    BSF ADCON0,1
-
-StartupWait:
-    BTFSC ADCON0,1
-    GOTO $-1
-    BANKSEL ADRESH
-    MOVF ADRESH,W
-    MOVWF adc_h ;full 10-bit result, right-justified, no shifting needed
-    BANKSEL ADRESL
-    MOVF ADRESL,W
+MapAdcToCcp:
+    ; ccp_next = 2 * ADC
     BANKSEL adc_l
-    MOVWF adc_l
+    movf adc_l,w
+    movwf ccp_next_l
+    movf adc_h,w
+    movwf ccp_next_h
 
-    PAGESEL MapAdcToCcp ;the mapping routine might live on a different
-    CALL MapAdcToCcp ;page of program memory, so this makes sure
-    PAGESEL $ ;the CALL actually lands on it
+    bcf STATUS,0
+    rlf ccp_next_l,f
+    rlf ccp_next_h,f
 
-    BANKSEL CCPR1H
-    MOVF ccp_next_h,W
-    MOVWF CCPR1H ;manually load the very first pulse's end-time,
-    MOVF ccp_next_l,W ;since Timer1's ISR (which normally does this)
-    MOVWF CCPR1L ;hasn't run yet
-    BSF ADCDone,0 ;this value is ready and waiting
+    ; Reuse adc_l:adc_h as 3 * ADC.
+    movf ccp_next_l,w
+    addwf adc_l,f
+    btfsc STATUS,0
+    incf adc_h,f
+    movf ccp_next_h,w
+    addwf adc_h,f
 
-    MOVLW 0b00000001 ;prescale 1:1, internal clock, and start Timer1
-    MOVWF T1CON ;counting right now, from 0xB1E0
+    ; adc_l:adc_h = floor(3 * ADC / 64)
+    movlw 6
+    movwf map_count
 
-    BSF INTCON,6 ;allow peripherals to interrupt at all
-    BSF INTCON,7 ;interrupts can now actually happen
+mapShift:
+    bcf STATUS,0
+    rrf adc_h,f
+    rrf adc_l,f
+    decfsz map_count,f
+    goto mapShift
 
-Main:
-    BTFSC Pulse,0 ;is a pulse still actively running
-    GOTO Main ;if high don't touch the ADC yet
-    BTFSC ADCDone,0 ;have we already prepared next frame's value
-    GOTO Main ;if high then nothing more to do until the next frame
-    BSF ADCON0,1
-ConvWait:
-    BTFSC ADCON0,1
-    GOTO ConvWait
+    ; Subtract the correction term.
+    movf adc_l,w
+    subwf ccp_next_l,f
+    btfss STATUS,0
+    decf ccp_next_h,f
 
-    BANKSEL ADRESH
-    MOVF ADRESH,W
-    MOVWF adc_h ;full 10-bit result, right-justified
-    BANKSEL ADRESL
-    MOVF ADRESL,W
-    BANKSEL adc_l
-    MOVWF adc_l
+    ; Add Timer1 reload + 500 us.
+    movlw CCP_OFFSET_L
+    addwf ccp_next_l,f
+    btfsc STATUS,0
+    incf ccp_next_h,f
 
-    BANKSEL ADCON0
-    PAGESEL MapAdcToCcp
-    CALL MapAdcToCcp ;ccp_next_h:ccp_next_l now holds next
-    PAGESEL $ ;frame's pulse end-time
+    movlw CCP_OFFSET_H
+    addwf ccp_next_h,f
 
-    BSF ADCDone,0 ;done for this frame - go idle
-    GOTO Main
+    return
 
-; ISR - Timer1 starts each frame's pulse, CCP1 ends it. Nothing else
-; in this program can interrupt, so either one could have fired.
-
-IsrHandler:
-    MOVWF W_TEMP
-    SWAPF STATUS,W
-    MOVWF STATUS_TEMP
-
-    BTFSC PIR1,0 ;did Timer1 just roll over? (new frame)
-    CALL Service_Timer1
-
-    BTFSC PIR1,2 ;did CCP1 just match? (pulse should end)
-    CALL Service_CCP1
-
-    SWAPF STATUS_TEMP,W
-    MOVWF STATUS
-    SWAPF W_TEMP,F
-    SWAPF W_TEMP,W
-    RETFIE
-
-; Service_Timer1: a new 20ms frame has begun. Start the pulse,
-; tell CCP1 when to end it, and clear the way for main to start
-; preparing the NEXT frame's value.
-
-Service_Timer1:
-    BCF PIR1,0 ;clear the flag
-    MOVLW 0xB1
-    MOVWF TMR1H ;reload the same starting count
-    MOVLW 0xE0
-    MOVWF TMR1L ;so every frame is exactly 20ms
-
-    BSF PORTC,2 ;pulse starts now - servo pin goes HIGH
-
-    MOVF ccp_next_h,W
-    MOVWF CCPR1H ;tell CCP1 the exact Timer1 count that
-    MOVF ccp_next_l,W ;should end THIS pulse (calculated last frame)
-    MOVWF CCPR1L
-
-    BCF ADCDone,0 ;main is now free to prepare next frame's value
-    BSF Pulse,0 ;and main must NOT touch the ADC until this clears
-    RETURN
-
-; Service_CCP1: Timer1's count just reached the target we loaded -
-; this pulse is over.
-
-Service_CCP1:
-    BCF PIR1,2 ;clear the flag
-    BCF PORTC,2 ;pulse ends now - servo pin goes LOW
-    BCF Pulse,0 ;main is now allowed to work again
-    RETURN
-
-    End
+END

@@ -76,7 +76,7 @@ Setup:
     MOVWF   TMR1H         ;load the timer's starting count, high byte
     MOVLW   0xE0
     MOVWF   TMR1L         ;low byte, so it takes exactly 20ms to roll over
-    BCF     PORTC,2       ;gorce the servo low so no weird glitch
+    BCF     PORTC,2       ;set the servo low so no weird glitch
     BCF     PIR1,0        ;clear the timer1 interrupt flag
     BCF     PIR1,2        ;clear the CCP1 interrupt flag 
     BANKSEL PIE1
